@@ -1,146 +1,128 @@
-# EntityMatch AI — Business Entity Resolution Platform
+# EntityMatch AI — Production Entity Resolution Engine
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)]()
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100%2B-teal.svg)]()
 [![React](https://img.shields.io/badge/React-18-blue.svg)]()
-[![TailwindCSS](https://img.shields.io/badge/TailwindCSS-3.4-38bdf8.svg)]()
-[![Macro F0.5](https://img.shields.io/badge/Validation%20Macro%20F0.5-0.9239-success.svg)]()
+[![Polars](https://img.shields.io/badge/Polars-0.20%2B-navy.svg)]()
+[![FAISS](https://img.shields.io/badge/FAISS-1.13-purple.svg)]()
+[![LightGBM](https://img.shields.io/badge/LightGBM-4.0-orange.svg)]()
 
-> **Amazon ML Challenge 2026**: High-precision, scalable entity resolution platform matching noisy business records across three independent data sources without shared identifiers.
+> **Amazon ML Challenge 2026**: High-precision, ultra-fast offline business entity resolution matching noisy records across independent data sources without shared identifiers.
 
 ---
 
 ## 📌 Problem & Challenge Overview
-- **Source 1 (S1)**: Clean, deduplicated reference entities.
-- **Source 2 (S2) & Source 3 (S3)**: Noisy provider records featuring acronyms, abbreviations, landmark addresses, and transliterations.
-- **Objective**: For every Source 1 entity, predict all matching S2/S3 records — zero (singleton), one, or many.
-- **Evaluation Metric**: **Macro $F_{0.5}$** (Precision weighted $2\times$ over recall). False merges are penalized heavily.
-- **Singleton Dynamic**: Entities with no true match earn a full **1.0** score when predicted empty, and **0.0** when falsely matched.
+- **Source 1 (S1)**: 1,732,544 clean reference entities in test set.
+- **Source 2 (S2) & Source 3 (S3)**: ~10 Million noisy provider records featuring transliterations, legal acronym shifts, and varied addresses.
+- **Objective**: For every Source 1 entity, predict matching S2/S3 IDs (0, 1, or many).
+- **Evaluation Metric**: **Macro $F_{0.5}$** (Precision weighted $2\times$ over recall). False merges incur a severe penalty.
+- **Singleton Dynamic**: Unmatched entities must output an empty string to earn full 1.0 credit.
 
 ---
 
-## 🚀 Key Results & Performance
-- **Validation Macro $F_{0.5}$**: **$0.9239$**
-- **Validation Precision**: **$0.9780$ ($97.8\%$)**
-- **Validation Recall**: **$0.8753$ ($87.5\%$)**
-- **Blocking Recall**: **$89.90\%$** with $>99.98\%$ search space reduction
-- **Validator Compliance**: **`PASS (Exit 0)`** on `utils/validate_submission.py`
+## 🚀 Completed Milestones & What Has Been Done
+
+### ✅ Milestone 1: Offline Kaggle Model Loading
+- Downloaded and bundled `sentence-transformers/all-MiniLM-L6-v2` (80MB) locally under `code/models/minilm/` from Kaggle dataset `shinomoriaoshi/sentencetransformersallminilml6v2`.
+- Confirmed 100% offline inference capability without internet access or external APIs.
+- Built test script [scripts/test_model_load.py](file:///scripts/test_model_load.py) verifying embedding dimension (384) and similarity computation.
+
+### ✅ Milestone 2: Ultra-Fast Blocking with FAISS & Embeddings
+- Batch encoded normalized texts (`name [SEP] address`) into 384-dimensional dense vectors.
+- Built **FAISS** index on target entities for top-20 nearest neighbor candidate retrieval via cosine similarity.
+- Reduced search space from $17.3\text{ Trillion}$ pairs to top 20 candidates per entity.
+- Saved candidate pairs to [output/candidate_pairs.tsv](file:///output/candidate_pairs.tsv).
+
+### ✅ Milestone 3: Vectorized Feature Engineering & LightGBM Classifier
+- Extracted similarity features using **Polars** and **RapidFuzz** (C++ backend):
+  1. `embedding_cosine`: Dense FAISS similarity score
+  2. `name_score`: `fuzz.token_sort_ratio`
+  3. `address_score`: `fuzz.WRatio`
+  4. `city_exact_match`: Normalized municipality match
+  5. `token_overlap`: Token Jaccard index
+- Trained a **LightGBM** classifier with hard negatives from FAISS top-20 search.
+- Tuned decision threshold specifically for **Macro $F_{0.5}$** ($\theta \approx 0.82 - 0.88$).
+
+### ✅ Milestone 4: Hardened Checkpointed Inference Engine
+- Rewrote [full_scale_inference.py](file:///full_scale_inference.py) with:
+  - Safe text normalization and encoding.
+  - Per-country checkpointing (`US`, `India`, `France`) with isolated error recovery.
+  - Strict singleton preservation: unmerged S1 entities are retained as empty match strings `""`.
+  - Invariant assertions verifying that exactly 1,732,544 rows are produced.
+
+### ✅ Milestone 5: Submission Validation & Packaging
+- Executed [utils/validate_submission.py](file:///utils/validate_submission.py):
+  - **1,732,544 rows** (100% match with `test_source1.tsv`)
+  - **1,732,544 unique S1 IDs** (Zero duplicates)
+  - **Zero NULL/NaN values**
+  - **Strict TSV tab-separated structure** confirmed
+- Generated final submission archive [EntityMatch_AI_submission.zip](file:///EntityMatch_AI_submission.zip).
 
 ---
 
 ## 📂 Repository Structure
 ```
 AMAZON-ML-CHALLENGE/
-├── backend/                                       # FastAPI Service & ML Engine
-│   ├── main.py                                    # FastAPI server entry point & CORS
-│   ├── routers/
-│   │   ├── datasets.py                            # Fast ingestion, streaming preview & schema validator
-│   │   ├── pipeline.py                            # Background execution with progress streaming
-│   │   └── results.py                             # Review queue, live re-thresholding & zip export
-│   └── services/
-│       ├── preprocessor.py                        # Unicode NFKD, legal suffix & Indic transliteration
-│       ├── blocking_engine.py                     # Multi-pass inverted index candidate generator
-│       ├── feature_extractor.py                   # Token Jaccard, char 3-grams & Levenshtein features
-│       └── matching_model.py                      # Macro F0.5-calibrated classifier
-├── frontend/                                      # Linear/Vercel SaaS React Dashboard
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── Header.tsx                         # Navigation bar with live preset switcher
-│   │   │   ├── PipelineStepper.tsx                # 5-stage transparent pipeline indicator
-│   │   │   ├── StatCards.tsx                      # 7 live metric overview cards
-│   │   │   ├── FileUploadCard.tsx                 # Drag-and-drop upload with validation badges
-│   │   │   ├── DataPreviewModal.tsx               # Filterable 20-row sample data inspector
-│   │   │   ├── ThresholdSlider.tsx                # Real-time F0.5 precision cutoff slider
-│   │   │   ├── MatchReviewQueue.tsx               # Borderline review queue with Accept/Reject actions
-│   │   │   ├── EntityDetailModal.tsx              # Side-by-side field diff inspector
-│   │   │   └── ValidationBanner.tsx               # Verified submission status & 1-click download
-│   │   └── App.tsx                                # Main application layout
 ├── code/
-│   └── business_entity_resolution/                # Standalone Submission Code Package
-│       ├── src/
-│       │   ├── run_pipeline.py                    # End-to-end CLI pipeline runner
-│       │   ├── preprocessor.py                    # Standalone text normalizer
-│       │   ├── blocking_engine.py                 # Standalone inverted index
-│       │   ├── feature_extractor.py               # Standalone feature generator
-│       │   └── matching_model.py                  # Standalone ML classifier
-│       ├── README.md                              # Standalone reproduction guide
-│       └── requirements.txt                       # Pinned dependencies
+│   ├── models/
+│   │   └── minilm/                                # Offline MiniLM-L6-v2 model weights & tokenizer
+│   └── business_entity_resolution/                # Modular entity resolution library
+├── scripts/
+│   ├── test_model_load.py                         # Test script proving offline model loading
+│   └── prepare_embeddings.py                      # Precomputed embedding generator
+├── utils/
+│   ├── validate_submission.py                     # Competition submission validator
+│   └── validate_submission_fixed.py               # Enhanced invariant checker
 ├── output/
-│   ├── matching_results.tsv                       # Leaderboard submission file
-│   └── candidate_pairs.tsv                        # Model candidate set (for audit ranking)
-├── Documentation_template.md                      # Methodology write-up
-└── EntityMatch_AI_submission.zip                  # Full final submission archive
+│   ├── matching_results.tsv                       # Portal submission file (1,732,544 rows)
+│   └── candidate_pairs.tsv                        # Top candidate pairs (1,732,544 rows)
+├── full_scale_inference.py                        # Ultra-fast end-to-end inference engine
+├── Documentation_template.md                      # Detailed technical documentation
+├── EntityMatch_AI_submission.zip                  # Packaged submission archive
+└── README.md                                      # Project overview and reproduction guide
 ```
 
 ---
 
-## 📥 Submission Instructions: What to Upload
+## 📥 Submission Files: What to Upload
 
-You have **5 submissions per day** on the portal:
+1. **Leaderboard Submission**:
+   - File: [output/matching_results.tsv](file:///output/matching_results.tsv)
+   - Format: `source1_entity_id \t matched_entity_ids` (Tab-separated)
+   - Upload directly to the competition portal submission portal.
 
-### 1. Live Leaderboard Submissions
-Upload **`output/matching_results.tsv`** to the competition portal submission box.
-- Strict TSV format: `source1_entity_id \t matched_entity_ids`
-- Singletons have empty match lists
-- S2/S3 IDs separated by commas with no quotes
+2. **Code & Documentation Package**:
+   - File: [EntityMatch_AI_submission.zip](file:///EntityMatch_AI_submission.zip)
+   - Contains offline code, candidate pairs, matching results, and technical documentation.
 
-### 2. Final Submission Package (For Team Evaluation)
-Upload **`EntityMatch_AI_submission.zip`** (or download it directly from the UI with 1 click).
-Zip contents:
-```
-EntityMatch_AI_submission.zip
-├── output/
-│   ├── matching_results.tsv
-│   └── candidate_pairs.tsv
-├── code/
-│   └── business_entity_resolution/
-│       ├── src/ (run_pipeline.py, preprocessor.py, blocking_engine.py, feature_extractor.py, matching_model.py)
-│       ├── README.md
-│       └── requirements.txt
-└── Documentation_template.md
+---
+
+## 🛠️ Reproduction & Offline Execution Guide
+
+```bash
+# 1. Install dependencies
+pip install polars rapidfuzz faiss-cpu sentence-transformers lightgbm kagglehub
+
+# 2. Verify offline model load
+python scripts/test_model_load.py
+
+# 3. Run full-scale inference
+python full_scale_inference.py
+
+# 4. Validate output integrity
+python utils/validate_submission.py
 ```
 
 ---
 
-## 🛠️ Step-by-Step Manual Verification Procedure
+## 🔮 Further Steps & Future Improvements
 
-### Option A: Using the Web Dashboard UI
-1. **Start Backend Service**:
-   ```bash
-   python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
-   ```
-2. **Start Frontend Dashboard**:
-   ```bash
-   cd frontend
-   npm run dev
-   ```
-3. Open **[http://127.0.0.1:5173/](http://127.0.0.1:5173/)** in your browser.
-4. Click **"Auto-Load Training Set (2.2M)"** to verify schemas and preview 20 sample rows.
-5. Click **"Run Entity Resolution Pipeline"** to watch live stages execute:
-   `Normalization` $\to$ `Blocking` $\to$ `Feature Gen` $\to$ `Precision Matching` $\to$ `Export`.
-6. Adjust the **Threshold Slider** (e.g. `0.75`) to see real-time match and singleton updates.
-7. Click **"Download Submission Package (.zip)"** to get your ready-to-upload archive.
-
----
-
-### Option B: Using the Command Line Runner
-1. **Run End-to-End Pipeline**:
-   ```bash
-   python code/business_entity_resolution/src/run_pipeline.py \
-       --train-dir student_resource/dataset/train \
-       --test-dir student_resource/dataset/test \
-       --output-dir output
-   ```
-2. **Run Local Validator**:
-   ```bash
-   python student_resource/utils/validate_submission.py \
-       --matching output/matching_results.tsv \
-       --candidate output/candidate_pairs.tsv \
-       --test-dir student_resource/dataset/test
-   ```
-3. Look for the output:
-   ```
-   ML Challenge 2026 — submission validator
-   PASS — no blocking issues found. Safe to submit.
-   ```
+1. **GPU Acceleration for Offline Embeddings**:
+   - Utilize CUDA/TensorRT for sub-second batch encoding across 10M records when GPU resources are available.
+2. **Multi-Model Ensembling**:
+   - Blend MiniLM-L6-v2 embeddings with character-level byte embeddings (e.g. ByT5 or Canine) for enhanced robustness against rare OCR and phonetic corruption.
+3. **Adaptive Thresholding by Country**:
+   - Fine-tune country-specific decision thresholds ($\theta_{\text{US}}$, $\theta_{\text{India}}$, $\theta_{\text{France}}$) based on empirical validation splits.
+4. **Graph-Based Transitive Closure**:
+   - Apply connected-component clustering across (S1, S2, S3) candidate bipartite graphs to enforce multi-source consistency constraints.

@@ -1,6 +1,8 @@
 # Datasets & Large Data files
 *.tsv
 *.csv
+*.bin
+*.zip
 dataset/
 student_resource/dataset/
 data/

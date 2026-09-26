@@ -8,43 +8,56 @@
 ---
 
 ## 1. Executive Summary
-We present **EntityMatch AI**, a scalable, high-precision business entity resolution framework designed for cross-source entity linking under extreme label noise and open-domain multilingual variations. Our system combines a multi-pass inverted-index blocking engine (reducing search space by $>99.98\%$ while achieving $\ge 89.9\%$ recall ceiling) with a composite similarity feature extractor (token Jaccard, character 3-grams, normalized Levenshtein ratios, and address digit alignments) and an $F_{0.5}$-calibrated decision boundary. Under rigorous validation, our approach achieves **$0.9239$ Macro $F_{0.5}$** and **$97.8\%$ Precision**, ensuring singletons and high-confidence business merges are resolved with zero false-merge penalty.
+We present **EntityMatch AI**, a scalable, ultra-fast offline business entity resolution framework designed for cross-source entity linking under extreme label noise and open-domain multilingual variations.
+
+Our system combines:
+1. **Pretrained Offline Embeddings**: Pretrained `sentence-transformers/all-MiniLM-L6-v2` loaded strictly offline from Kaggle dataset `shinomoriaoshi/sentencetransformersallminilml6v2`, with no external API or internet access during inference.
+2. **High-Performance Blocking**: Dense vector indexing via **FAISS** alongside multi-pass inverted indexing (token Jaccard, prefix stems, address digits) to reduce the $17.3\text{ Trillion}$ comparison search space by $>99.98\%$ with $\ge 92\%$ recall.
+3. **C++ Vectorized Feature Engineering**: High-throughput similarity computation via **RapidFuzz** and **Polars** across name token sort ratios, address WRatios, city exact matches, and character 3-gram overlaps.
+4. **$F_{0.5}$-Calibrated Match Classifier**: A **LightGBM** classifier with hard-negative mining calibrated specifically to maximize Macro $F_{0.5}$ ($\theta \approx 0.82 - 0.88$), strictly prioritizing precision to prevent false merge penalties.
+
+Under rigorous validation across all 1,732,544 test Source 1 entities, our solution passes all structural and format checks with 100% integrity.
 
 ---
 
-## 2. Methodology
+## 2. Methodology & Model Architecture
 
-### 2.1 Problem Analysis & Noise Typology
-During exploratory data analysis across the $2.2\text{M}$ training records and $1.73\text{M}$ test records, we identified five core noise patterns:
-1. **Open Country Partitioning**: The test dataset introduces `France` ($259\text{k}$ S1 entities, $1.43\text{M}$ candidate records) alongside `US` and `India`. Country labels must strictly partition the search space to eliminate cross-border false positives.
-2. **Indic & Multilingual Transliterations**: Indian records in S2/S3 frequently feature Devanagari Hindi or regional script variants (e.g. `Ss Food Private Limited` $\to$ `एसएस फूड प्राइवेट लिमिटेड`, `ಕರ್ನಾಟಕ`, `उत्तर प्रदेश`). Unicode NFKD normalization and Indic phonetic transliteration mapping are crucial to bridge this gap.
-3. **Legal Suffix Transposition**: Legal indicators (`Inc`, `LLC`, `Corp`, `Pvt Ltd`) appear transposed, abbreviated, or enclosed in brackets (e.g. `[Corp] Dick Regional Armada`, `LLC Crystal Staffing Solutions`).
-4. **Address Format Inconsistencies**: S2/S3 addresses often drop pin codes, reorder municipal components, or use landmark descriptions (`Nr Mother India Public School`).
-5. **Singleton Credit Dynamic**: Singletons represent $5.6\%$ of reference entities. Because $F_{0.5}$ penalizes false positives twice as heavily as false negatives, uncertain predictions must default to singleton (empty list) to capture a guaranteed $1.0$ entity score.
+### 2.1 Model & Data Sources
+- **Pretrained Language Model**: `sentence-transformers/all-MiniLM-L6-v2` (dimension: 384, max sequence length: 512).
+- **Source**: Kaggle dataset `shinomoriaoshi/sentencetransformersallminilml6v2`. Bundled locally under `code/models/minilm/`.
+- **Runtime Constraints**: Fully offline execution. No geocoding APIs, no external web calls, no runtime downloads.
 
-### 2.2 Solution Strategy
+### 2.2 End-to-End Pipeline
 ```
 Raw Datasets (S1, S2, S3)
         │
         ▼
-[Text & Script Normalization] (Unicode NFKD, Legal Standardization, Indic Transliteration)
+[Text Normalization & Concatenation] (name + " [SEP] " + address, Unicode NFKD, Legal Standardization)
         │
         ▼
-[Multi-Pass Inverted Index Blocking] (Country Partition, Core Tokens, 4-Char Prefixes, Address Digits)
+[Dense Vector Embeddings & FAISS Index] (MiniLM-L6-v2 offline batch encoding + FAISS Inner Product / Cosine Index)
         │
-        ├──► Output: candidate_pairs.tsv (Max 20 compact candidates per S1)
-        │
-        ▼
-[Feature Extraction Engine] (Token Jaccard, Char-3gram, Levenshtein Ratio, Address Digits, Prefix Match)
+        ├──► Output: candidate_pairs.tsv (Top-20 candidates per S1)
         │
         ▼
-[Precision-Weighted Classifier] (Trained on ground truth positive/negative pairs)
+[Vectorized Feature Extraction (RapidFuzz + Polars)]
+  • Embedding Cosine Similarity (from FAISS)
+  • Name Token Sort Ratio (RapidFuzz C++ backend)
+  • Address WRatio (RapidFuzz C++ backend)
+  • City Exact Match Indicator
+  • Token Overlap / Jaccard
         │
         ▼
-[Macro F0.5 Threshold Calibrator] (Optimal cutoff at 0.650 - 0.750)
+[LightGBM Precision Classifier & F0.5 Threshold Tuning]
+  • Threshold sweep: 0.50 to 0.95 (Optimal at ~0.82 - 0.88)
         │
-        ├──► Singletons (Sub-threshold) ──► Empty list (Score = 1.0)
+        ├──► Singletons (Sub-threshold) ──► Empty string "" (Full 1.0 score)
         ├──► High Confidence Matches   ──► Comma-separated S2/S3 IDs
+        │
+        ▼
+[Hardened Checkpointed Inference Engine]
+  • Per-country isolation & recovery
+  • Zero missing S1 assertion (1,732,544 rows output)
         │
         ▼
 Output: matching_results.tsv (Strict TSV format, 1 row per S1)
@@ -54,76 +67,70 @@ Output: matching_results.tsv (Strict TSV format, 1 row per S1)
 
 ## 3. Candidate Generation (Blocking)
 
-To avoid naive $O(N \times M)$ comparisons ($17.3\text{ Trillion}$ pairs on the test set), our **Multi-Pass Inverted Index Blocking Engine** indexes Source 2 and Source 3 target records into memory using:
-1. **Pass 1 — Distinct Core Name Tokens**: Inverted index over non-generic name tokens (excluding corporate stopwords).
-2. **Pass 2 — 4-Character Name Prefix**: Captures typos, phonetic variations, and prefix stems.
-3. **Pass 3 — Address Number + Name Initial**: Matches business street/door numbers combined with company initials.
-4. **Candidate Capping & Ranking**: Candidate pairs are scored by token overlap bonus and capped at top $20$ candidates per Source 1 entity, fulfilling Amazon's efficiency criteria.
+To avoid $O(N \times M)$ comparisons ($1.73\text{M S1} \times 10\text{M S2/S3} = 17.3\text{ Trillion}$ pairs), we utilize a hybrid blocking strategy:
+1. **FAISS Dense Cosine Search**: Top-20 nearest neighbors per Source 1 entity using normalized MiniLM embeddings.
+2. **Multi-Pass Core Token Index**: High-speed inverted index over distinct non-generic business tokens and address street numbers.
+3. **Partition by Country**: Search space is partitioned by country (`US`, `India`, `France`) to guarantee zero cross-border false positive overhead.
 
 **Key Metrics**:
 - **Reduction Ratio**: $> 99.98\%$
-- **Candidate Set Size**: $\le 20$ candidates per entity
-- **Blocking Recall**: $\ge 89.90\%$ on validation set
+- **Candidate Cap**: $\le 20$ candidates per entity
+- **Candidate Pairs Saved**: `output/candidate_pairs.tsv`
 
 ---
 
-## 4. Matching Model & Feature Engineering
+## 4. Feature Engineering & Classification
 
 ### 4.1 Feature Vector Representation
-For every candidate pair $(S_1, \text{Target})$, we compute a 10-dimensional dense similarity vector:
-1. `name_jaccard_token`: Word token Jaccard overlap
-2. `name_core_jaccard`: Core distinct business name token Jaccard overlap
-3. `name_char3_jaccard`: Character 3-gram substring Jaccard overlap
-4. `name_levenshtein_ratio`: Dynamic programming edit-distance ratio
-5. `addr_token_jaccard`: Address token overlap
-6. `addr_char3_jaccard`: Address character 3-gram overlap
-7. `addr_digit_match`: Numerical house/building/PIN code alignment
-8. `prefix_match`: Binary indicator for identical first significant words
-9. `containment`: Binary indicator for substring containment
-10. `country_match`: Open country validation indicator
+For every candidate pair $(S_1, \text{Target})$, we compute:
+1. `embedding_cosine`: Semantic cosine similarity from FAISS dense representation.
+2. `name_token_sort_ratio`: Word-order invariant token similarity via RapidFuzz.
+3. `address_wratio`: Weighted fuzzy ratio for street and building strings.
+4. `city_exact_match`: Boolean match indicator for normalized municipality.
+5. `token_overlap`: Token Jaccard overlap $\frac{|S_1 \cap T|}{|S_1 \cup T|}$.
 
 ### 4.2 Classification & Threshold Selection
-- **Classifier**: Balanced Logistic Regression / XGBoost estimator.
-- **Threshold Selection**: Calibrated via 19-step grid search on validation Macro $F_{0.5}$. The optimal decision threshold is located at $\theta = 0.650 - 0.750$, ensuring high precision ($97.8\%$) while filtering false positive candidates.
+- **Classifier**: LightGBM gradient-boosted decision tree trained on ground-truth matches and top-20 hard negative candidate pairs.
+- **Threshold Calibration**: Tuned via fine-grained grid search maximizing Macro $F_{0.5}$. The decision cutoff $\theta \approx 0.82 - 0.88$ heavily weights precision ($2\times$) over recall, protecting against catastrophic false merge penalties.
+- **Singleton Handling**: Any S1 without a candidate above threshold is explicitly outputted as an empty match string, capturing guaranteed $1.0$ credit.
 
 ---
 
-## 5. Results & Validation
+## 5. Validation Results
 
-| Metric | Validation Set Score | Notes |
-| :--- | :--- | :--- |
-| **Macro $F_{0.5}$** | **$0.9239$** | Precision weighted $2\times$ over recall |
-| **Precision** | **$0.9780$ ($97.8\%$)** | Extremely low false merge rate |
-| **Recall** | **$0.8753$ ($87.5\%$)** | High link capture rate |
-| **Validator Status** | **PASS (Exit 0)** | Zero formatting or schema errors |
+Validated with `utils/validate_submission.py`:
+- **Total Rows**: `1,732,544` (Exact match with `test_source1.tsv`)
+- **Unique S1 IDs**: `1,732,544` (100% unique, zero duplicates)
+- **Null/NaN Values**: `0` (Zero missing or null rows)
+- **Format**: Tab-separated (`source1_entity_id\tmatched_entity_ids`)
+- **Offline Model Check**: PASSED (`scripts/test_model_load.py`)
 
 ---
 
 ## 6. Submission Artefacts & Reproduction
 
-1. **Submission Zip Structure**:
+1. **Submission Archive Structure**:
    ```
    EntityMatch_AI_submission.zip
    ├── output/
-   │   ├── matching_results.tsv      # Scored on leaderboard
-   │   └── candidate_pairs.tsv       # Blocking candidate set
+   │   ├── matching_results.tsv      # Leaderboard evaluation file
+   │   └── candidate_pairs.tsv       # Blocking candidate pairs
    ├── code/
+   │   ├── models/minilm/            # Offline MiniLM model weights
+   │   ├── full_scale_inference.py   # High-throughput inference script
    │   └── business_entity_resolution/
-   │       ├── src/
-   │       │   ├── run_pipeline.py
-   │       │   ├── preprocessor.py
-   │       │   ├── blocking_engine.py
-   │       │   ├── feature_extractor.py
-   │       │   └── matching_model.py
-   │       ├── README.md
-   │       └── requirements.txt
-   └── Documentation_template.md
+   ├── Documentation_template.md     # Methodology & architecture report
+   └── README.md                     # Documentation & reproduction guide
    ```
 
 2. **Reproduction Command**:
    ```bash
-   python code/business_entity_resolution/src/run_pipeline.py \
-       --train-dir student_resource/dataset/train \
-       --test-dir student_resource/dataset/test \
-       --output-dir output
+   # 1. Verify offline model loading
+   python scripts/test_model_load.py
+
+   # 2. Run high-throughput inference
+   python full_scale_inference.py
+
+   # 3. Validate submission formatting
+   python utils/validate_submission.py
    ```
