@@ -1,7 +1,7 @@
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from backend.routers import datasets
+from backend.routers import datasets, pipeline, results
 
 app = FastAPI(
     title="EntityMatch AI Backend",
@@ -9,7 +9,6 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Enable CORS for Vite frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,6 +18,8 @@ app.add_middleware(
 )
 
 app.include_router(datasets.router)
+app.include_router(pipeline.router)
+app.include_router(results.router)
 
 @app.get("/")
 def root():

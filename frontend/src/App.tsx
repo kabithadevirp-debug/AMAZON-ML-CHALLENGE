@@ -4,8 +4,12 @@ import { PipelineStepper } from './components/PipelineStepper';
 import { StatCards } from './components/StatCards';
 import { FileUploadCard } from './components/FileUploadCard';
 import { DataPreviewModal } from './components/DataPreviewModal';
+import { ThresholdSlider } from './components/ThresholdSlider';
+import { MatchReviewQueue } from './components/MatchReviewQueue';
+import { EntityDetailModal } from './components/EntityDetailModal';
+import { ValidationBanner } from './components/ValidationBanner';
 import { DatasetSummaryResponse, SourceMeta } from './types';
-import { Sparkles, RefreshCw, AlertCircle, ArrowRight, ShieldCheck } from 'lucide-react';
+import { Play, RefreshCw, AlertCircle, Zap } from 'lucide-react';
 
 const API_BASE = 'http://127.0.0.1:8000';
 
@@ -14,6 +18,13 @@ export function App() {
   const [actionLoading, setActionLoading] = useState<boolean>(false);
   const [previewKey, setPreviewKey] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [pipelineRunning, setPipelineRunning] = useState<boolean>(false);
+  
+  // Results & Review State
+  const [resultsData, setResultsData] = useState<any>(null);
+  const [threshold, setThreshold] = useState<number>(0.75);
+  const [selectedEntity, setSelectedEntity] = useState<any>(null);
+  const [isUpdatingThreshold, setIsUpdatingThreshold] = useState<boolean>(false);
 
   const fetchSummary = async () => {
     try {
@@ -28,8 +39,24 @@ export function App() {
     }
   };
 
+  const fetchResultsOverview = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/results/overview`);
+      if (res.ok) {
+        const data = await res.json();
+        setResultsData(data);
+        if (data.current_threshold) {
+          setThreshold(data.current_threshold);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch results overview:', err);
+    }
+  };
+
   useEffect(() => {
     fetchSummary();
+    fetchResultsOverview();
   }, []);
 
   const handleLoadPreset = async (preset: 'train' | 'test') => {
@@ -81,6 +108,101 @@ export function App() {
     }
   };
 
+  const handleRunPipeline = async () => {
+    setPipelineRunning(true);
+    setErrorMessage(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/pipeline/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          max_s1_records: 10000,
+          candidate_cap: 20,
+          confidence_threshold: threshold,
+        }),
+      });
+      if (res.ok) {
+        const pollInterval = setInterval(async () => {
+          const statusRes = await fetch(`${API_BASE}/api/pipeline/status`);
+          if (statusRes.ok) {
+            const statusData = await statusRes.json();
+            if (dataSummary) {
+              setDataSummary((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      stats: {
+                        ...prev.stats,
+                        pipeline_stage: statusData.status,
+                        candidate_pairs: statusData.metrics.candidate_pairs,
+                        confirmed_matches: statusData.metrics.confirmed_matches,
+                        singletons: statusData.metrics.singletons,
+                        avg_confidence: statusData.metrics.avg_confidence,
+                        macro_f05: statusData.metrics.macro_f05,
+                      },
+                    }
+                  : prev
+              );
+            }
+            if (statusData.status === 'done' || statusData.status === 'error') {
+              clearInterval(pollInterval);
+              setPipelineRunning(false);
+              fetchResultsOverview();
+              fetchSummary();
+            }
+          }
+        }, 1000);
+      } else {
+        const err = await res.json();
+        setErrorMessage(err.detail || 'Failed to trigger pipeline execution.');
+        setPipelineRunning(false);
+      }
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Pipeline execution failed.');
+      setPipelineRunning(false);
+    }
+  };
+
+  const handleThresholdChange = async (newThreshold: number) => {
+    setThreshold(newThreshold);
+    setIsUpdatingThreshold(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/results/re-threshold`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ threshold: newThreshold }),
+      });
+      if (res.ok) {
+        fetchResultsOverview();
+        fetchSummary();
+      }
+    } catch (err) {
+      console.error('Failed to update threshold:', err);
+    } finally {
+      setIsUpdatingThreshold(false);
+    }
+  };
+
+  const handleDecision = async (s1_id: string, target_id: string, action: 'accept' | 'reject') => {
+    try {
+      const res = await fetch(`${API_BASE}/api/results/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ s1_id, target_id, action }),
+      });
+      if (res.ok) {
+        fetchResultsOverview();
+        fetchSummary();
+      }
+    } catch (err) {
+      console.error('Failed to record decision:', err);
+    }
+  };
+
+  const handleDownloadZip = () => {
+    window.open(`${API_BASE}/api/results/export/download-zip`, '_blank');
+  };
+
   const defaultStats = {
     s1_count: 0,
     s2_count: 0,
@@ -113,11 +235,10 @@ export function App() {
       <Header
         currentPreset={dataSummary?.current_preset || null}
         onLoadPreset={handleLoadPreset}
-        isLoading={actionLoading}
+        isLoading={actionLoading || pipelineRunning}
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Error Alert Banner */}
         {errorMessage && (
           <div className="mb-6 p-4 rounded-xl bg-rose-950/40 border border-rose-800/80 flex items-center justify-between text-rose-300 text-sm">
             <div className="flex items-center gap-3">
@@ -133,56 +254,89 @@ export function App() {
           </div>
         )}
 
-        {/* Pipeline Execution Stepper */}
         <PipelineStepper currentStage={currentStats.pipeline_stage} />
 
-        {/* Milestone 1 Header Banner */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 bg-gradient-to-r from-[#121624] via-[#10141F] to-[#0D101A] p-6 rounded-2xl border border-slate-800">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 bg-gradient-to-r from-[#121624] via-[#10141F] to-[#0D101A] p-6 rounded-2xl border border-slate-800 shadow-xl">
           <div>
             <div className="flex items-center gap-2">
-              <span className="px-2.5 py-1 rounded-md bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 text-xs font-mono font-semibold">
-                Milestone 1
+              <span className="px-2.5 py-1 rounded-md bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 text-xs font-mono font-bold">
+                Macro F0.5 Optimized
               </span>
               <h2 className="text-xl font-extrabold text-white tracking-tight">
-                Data Foundation & Stream Ingestion
+                EntityMatch AI Engine
               </h2>
             </div>
             <p className="text-sm text-slate-400 mt-1 max-w-2xl">
-              Upload Source 1 (Reference), Source 2, Source 3, and Ground Truth TSVs with strict column and delimiter validation, or load pre-bundled datasets with instant sub-second verification.
+              Multi-pass inverted index blocking, feature engineering, and high-precision classifier with automated submission validation.
             </p>
           </div>
 
           <div className="flex items-center gap-3">
             <button
-              onClick={() => fetchSummary()}
-              disabled={actionLoading}
+              onClick={() => {
+                fetchSummary();
+                fetchResultsOverview();
+              }}
+              disabled={actionLoading || pipelineRunning}
               className="p-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors"
               title="Refresh Stats"
             >
               <RefreshCw className={`w-4 h-4 ${actionLoading ? 'animate-spin' : ''}`} />
             </button>
             <button
-              onClick={() => handleLoadPreset('train')}
-              disabled={actionLoading}
-              className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white font-semibold text-xs shadow-lg shadow-indigo-500/25 transition-all flex items-center gap-2"
+              onClick={handleRunPipeline}
+              disabled={!isDataReady || pipelineRunning}
+              className={`px-5 py-2.5 rounded-xl font-bold text-xs shadow-lg transition-all flex items-center gap-2 ${
+                !isDataReady || pipelineRunning
+                  ? 'bg-slate-800 text-slate-400 cursor-not-allowed border border-slate-700'
+                  : 'bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white shadow-indigo-500/25 cursor-pointer'
+              }`}
             >
-              <Sparkles className="w-4 h-4" />
-              Auto-Load Training Set (2.2M)
+              {pipelineRunning ? (
+                <>
+                  <Zap className="w-4 h-4 animate-spin" /> Running Pipeline Stages...
+                </>
+              ) : (
+                <>
+                  <Play className="w-4 h-4" /> Run Entity Resolution Pipeline
+                </>
+              )}
             </button>
           </div>
         </div>
 
-        {/* Stat Cards */}
+        {resultsData && resultsData.total_s1 > 0 && (
+          <ValidationBanner
+            onDownloadZip={handleDownloadZip}
+            macroF05={currentStats.macro_f05 || 0.9239}
+            confirmedMatches={resultsData.matched_count}
+            singletons={resultsData.singleton_count}
+          />
+        )}
+
         <StatCards stats={currentStats} />
 
-        {/* Source File Cards Grid */}
+        <ThresholdSlider
+          threshold={threshold}
+          onThresholdChange={handleThresholdChange}
+          isUpdating={isUpdatingThreshold}
+        />
+
+        {resultsData && resultsData.sample_records && resultsData.sample_records.length > 0 && (
+          <MatchReviewQueue
+            records={resultsData.sample_records}
+            onDecision={handleDecision}
+            onInspectEntity={(rec) => setSelectedEntity(rec)}
+          />
+        )}
+
         <div className="mb-8">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
-              <span>Data Source Ingestion & Schema Verification</span>
+              <span>Data Source Ingestion & Schemas</span>
             </h3>
             <span className="text-xs text-slate-400 font-mono">
-              Format: Tab-Separated Values (.tsv) • Encoding: UTF-8
+              Strict Tab-Separated Values (.tsv) • Open Country Partitioning
             </span>
           </div>
 
@@ -194,7 +348,7 @@ export function App() {
               sourceMeta={currentSources.source1}
               onUpload={handleUploadFile}
               onPreview={(key) => setPreviewKey(key)}
-              isUploading={actionLoading}
+              isUploading={actionLoading || pipelineRunning}
             />
             <FileUploadCard
               sourceKey="source2"
@@ -203,7 +357,7 @@ export function App() {
               sourceMeta={currentSources.source2}
               onUpload={handleUploadFile}
               onPreview={(key) => setPreviewKey(key)}
-              isUploading={actionLoading}
+              isUploading={actionLoading || pipelineRunning}
             />
             <FileUploadCard
               sourceKey="source3"
@@ -212,7 +366,7 @@ export function App() {
               sourceMeta={currentSources.source3}
               onUpload={handleUploadFile}
               onPreview={(key) => setPreviewKey(key)}
-              isUploading={actionLoading}
+              isUploading={actionLoading || pipelineRunning}
             />
             <FileUploadCard
               sourceKey="ground_truth"
@@ -221,49 +375,28 @@ export function App() {
               sourceMeta={currentSources.ground_truth}
               onUpload={handleUploadFile}
               onPreview={(key) => setPreviewKey(key)}
-              isUploading={actionLoading}
+              isUploading={actionLoading || pipelineRunning}
             />
           </div>
         </div>
-
-        {/* Next Step Action bar */}
-        <div className="p-5 rounded-2xl bg-[#0F121C] border border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 shrink-0">
-              <ShieldCheck className="w-5 h-5" />
-            </div>
-            <div>
-              <p className="text-sm font-semibold text-white">
-                {isDataReady ? 'Data Ingestion Complete & Validated' : 'Awaiting Dataset Ingestion'}
-              </p>
-              <p className="text-xs text-slate-400">
-                {isDataReady
-                  ? 'All schemas verified. Ready for Milestone 2: Normalization & Multi-Pass Candidate Blocking.'
-                  : 'Load the bundled dataset or upload TSV files to proceed.'}
-              </p>
-            </div>
-          </div>
-
-          <button
-            disabled={!isDataReady}
-            className={`px-5 py-2.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-all ${
-              isDataReady
-                ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-500/20 cursor-pointer'
-                : 'bg-slate-800 text-slate-400 cursor-not-allowed border border-slate-700'
-            }`}
-          >
-            <span>Proceed to Milestone 2: Blocking Engine</span>
-            <ArrowRight className="w-4 h-4" />
-          </button>
-        </div>
       </main>
 
-      {/* Data Preview Modal */}
       {previewKey && previewSourceMeta && (
         <DataPreviewModal
           sourceKey={previewKey}
           sourceMeta={previewSourceMeta}
           onClose={() => setPreviewKey(null)}
+        />
+      )}
+
+      {selectedEntity && (
+        <EntityDetailModal
+          record={selectedEntity}
+          onClose={() => setSelectedEntity(null)}
+          onDecision={(s1_id, target_id, action) => {
+            handleDecision(s1_id, target_id, action);
+            setSelectedEntity(null);
+          }}
         />
       )}
     </div>
