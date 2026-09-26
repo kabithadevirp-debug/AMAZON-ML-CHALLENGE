@@ -1,0 +1,51 @@
+# Datasets & Large Data files
+*.tsv
+*.csv
+dataset/
+student_resource/dataset/
+data/
+uploads/
+output/*.tsv
+!output/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+
+# Node / Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+.npm
+*.log
+
+# OS & IDE
+.DS_Store
+__MACOSX/
+Thumbs.db
+.vscode/
+.idea/
+.gemini/
