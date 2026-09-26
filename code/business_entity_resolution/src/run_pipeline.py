@@ -20,7 +20,7 @@ if current_dir not in sys.path:
 from preprocessor import normalize_business_name, normalize_address
 from blocking_engine import BlockingEngine
 from feature_extractor import extract_pair_features
-from matching_model import EntityMatchingModel, evaluate_macro_f05
+from matching_model import EntityMatchingModel, evaluate_macro_f05, resolve_global_matches
 
 def load_source_records_streaming(file_path: str, filter_ids: Set[str] = None, max_rows: int = None) -> List[Dict[str, str]]:
     """Fast streaming TSV reader."""
@@ -165,15 +165,13 @@ def run_pipeline(train_dir: str, test_dir: str, output_dir: str, sample_size: in
     print(f"  Optimized Decision Threshold: {best_th:.3f}", flush=True)
 
     probs = matcher.predict_pair_probs(np.array(X_train))
-    preds_map = {s1['entity_id']: set() for s1 in train_s1}
-    for (s1_id, target_id), prob in zip(train_pair_ids, probs):
-        if prob >= best_th:
-            preds_map[s1_id].add(target_id)
+    candidate_triplets = [(s1_id, target_id, float(p)) for (s1_id, target_id), p in zip(train_pair_ids, probs)]
+    preds_map = resolve_global_matches(candidate_triplets, train_s1_ids, threshold=best_th)
 
     macro_f05, prec, rec = evaluate_macro_f05(train_gt, preds_map)
-    print(f"  Validation Macro F0.5 : {macro_f05:.4f}", flush=True)
-    print(f"  Validation Precision  : {prec:.4f}", flush=True)
-    print(f"  Validation Recall     : {rec:.4f}", flush=True)
+    print(f"  Training Validation Macro F0.5 : {macro_f05:.4f}", flush=True)
+    print(f"  Training Validation Precision  : {prec:.4f}", flush=True)
+    print(f"  Training Validation Recall     : {rec:.4f}", flush=True)
 
     # 4. Run Test Set Inference
     print("\n[Step 4/5] Running Multi-Pass Blocking & Matching on Test Set...", flush=True)
@@ -193,8 +191,10 @@ def run_pipeline(train_dir: str, test_dir: str, output_dir: str, sample_size: in
     test_blocking.index_target_records(test_s2)
     test_blocking.index_target_records(test_s3)
 
-    test_candidate_rows = []
-    test_matching_rows = []
+    test_s1_ids = [r['entity_id'] for r in test_s1]
+    test_candidate_dict = {}
+    test_pair_features = []
+    test_pair_ids = []
 
     for s1_rec in test_s1:
         s1_id = s1_rec['entity_id']
@@ -211,26 +211,32 @@ def run_pipeline(train_dir: str, test_dir: str, output_dir: str, sample_size: in
         }
 
         candidates = test_blocking.generate_candidates_for_s1(s1_rec)
-        cand_str = ",".join(candidates) if candidates else ""
-        test_candidate_rows.append(f"{s1_id}\t{cand_str}\n")
+        test_candidate_dict[s1_id] = candidates
 
-        matched_ids = []
         if candidates:
-            cand_features = []
-            valid_cand_ids = []
             for cid in candidates:
                 t_meta = test_blocking.target_records.get(cid)
                 if t_meta:
-                    cand_features.append(extract_pair_features(s1_meta, t_meta))
-                    valid_cand_ids.append(cid)
-            
-            if cand_features:
-                cand_probs = matcher.predict_pair_probs(np.array(cand_features))
-                for cid, prob in zip(valid_cand_ids, cand_probs):
-                    if prob >= best_th:
-                        matched_ids.append(cid)
+                    test_pair_features.append(extract_pair_features(s1_meta, t_meta))
+                    test_pair_ids.append((s1_id, cid))
 
-        match_str = ",".join(matched_ids) if matched_ids else ""
+    test_triplets = []
+    if test_pair_features:
+        test_probs = matcher.predict_pair_probs(np.array(test_pair_features))
+        test_triplets = [(s1, t, float(p)) for (s1, t), p in zip(test_pair_ids, test_probs)]
+
+    test_predictions_map = resolve_global_matches(test_triplets, set(test_s1_ids), threshold=best_th)
+
+    test_candidate_rows = []
+    test_matching_rows = []
+
+    for s1_id in test_s1_ids:
+        cands = test_candidate_dict.get(s1_id, [])
+        cand_str = ",".join(cands) if cands else ""
+        test_candidate_rows.append(f"{s1_id}\t{cand_str}\n")
+
+        matched = sorted(test_predictions_map.get(s1_id, set()))
+        match_str = ",".join(matched) if matched else ""
         test_matching_rows.append(f"{s1_id}\t{match_str}\n")
 
     # 5. Export Output TSV Files

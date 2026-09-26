@@ -108,6 +108,9 @@ def validate_id_list_file(path, expected_header, col_label, required, valid_ids,
     self_matches, wrong_prefix, unknown = set(), set(), set()
     n_rows = empties = 0
 
+    all_target_claimants = {}
+    duplicate_targets = set()
+
     with open(path, encoding="utf-8") as f:
         header = f.readline()
         if not header:
@@ -153,6 +156,11 @@ def validate_id_list_file(path, expected_header, col_label, required, valid_ids,
             id_set = set(ids)
             mapping[s1] = id_set
             for mid in id_set:
+                if col_label == "matched_entity_ids":
+                    if mid in all_target_claimants:
+                        duplicate_targets.add(f"{mid} (claimed by {all_target_claimants[mid]} and {s1})")
+                    else:
+                        all_target_claimants[mid] = s1
                 if mid.startswith("S1-"):
                     self_matches.add(mid)
                 elif not mid.startswith(("S2-", "S3-")):
@@ -172,6 +180,11 @@ def validate_id_list_file(path, expected_header, col_label, required, valid_ids,
             intra_dupes,
             "{name}: repeated ID inside a {col} list for: {ex}. "
             "No duplicate IDs are allowed within a list.",
+        ),
+        (
+            duplicate_targets,
+            "{name}: duplicate target match ID(s) assigned to multiple S1 entities: {ex}. "
+            "Each S2/S3 entity can only belong to one S1 entity.",
         ),
         (
             self_matches,

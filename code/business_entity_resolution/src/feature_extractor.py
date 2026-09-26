@@ -47,6 +47,9 @@ def extract_pair_features(s1_meta: Dict[str, Any], target_meta: Dict[str, Any]) 
     s1_core = s1_meta.get('core_tokens', set())
     t_core = target_meta.get('core_tokens', set())
     
+    s1_core_str = " ".join(sorted(s1_core))
+    t_core_str = " ".join(sorted(t_core))
+    
     s1_addr = s1_meta.get('norm_addr', '')
     t_addr = target_meta.get('norm_addr', '')
     
@@ -56,31 +59,50 @@ def extract_pair_features(s1_meta: Dict[str, Any], target_meta: Dict[str, Any]) 
     s1_digits = s1_meta.get('digits', set())
     t_digits = target_meta.get('digits', set())
     
+    # 1. Name Features
     f_name_jaccard = jaccard_similarity(s1_tokens, t_tokens)
     f_core_jaccard = jaccard_similarity(s1_core, t_core)
     f_name_char3 = jaccard_similarity(get_char_ngrams(s1_name, 3), get_char_ngrams(t_name, 3))
-    f_lev = quick_levenshtein_ratio(s1_name, t_name)
-    f_addr_jaccard = jaccard_similarity(s1_addr_tokens, t_addr_tokens) if s1_addr and t_addr else 0.5
-    f_addr_char3 = jaccard_similarity(get_char_ngrams(s1_addr, 3), get_char_ngrams(t_addr, 3)) if s1_addr and t_addr else 0.5
-    f_digit_match = jaccard_similarity(s1_digits, t_digits) if s1_digits and t_digits else 0.5
+    f_name_lev = quick_levenshtein_ratio(s1_name, t_name)
+    f_core_lev = quick_levenshtein_ratio(s1_core_str, t_core_str)
+    
     f_prefix_match = 1.0 if (s1_name and t_name and s1_name.split()[0] == t_name.split()[0]) else 0.0
+    f_first_core_match = 1.0 if (s1_core and t_core and next(iter(s1_core)) == next(iter(t_core))) else 0.0
     
     f_containment = 0.0
     if s1_name and t_name:
         if s1_name in t_name or t_name in s1_name:
             f_containment = 1.0
             
+    # 2. Address Features (STRICT: no 0.5 default imputation for missing addresses)
+    both_have_addr = 1.0 if (s1_addr and t_addr) else 0.0
+    f_addr_jaccard = jaccard_similarity(s1_addr_tokens, t_addr_tokens) if both_have_addr else 0.0
+    f_addr_char3 = jaccard_similarity(get_char_ngrams(s1_addr, 3), get_char_ngrams(t_addr, 3)) if both_have_addr else 0.0
+    f_addr_lev = quick_levenshtein_ratio(s1_addr, t_addr) if both_have_addr else 0.0
+    
+    # 3. Numeric / PIN / Door number Features
+    both_have_digits = 1.0 if (s1_digits and t_digits) else 0.0
+    f_digit_match = jaccard_similarity(s1_digits, t_digits) if both_have_digits else 0.0
+    f_digit_overlap = 1.0 if (both_have_digits and len(s1_digits.intersection(t_digits)) > 0) else 0.0
+    
+    # 4. Strict Country Match
     f_country_match = 1.0 if s1_meta.get('country') == target_meta.get('country') else 0.0
 
     return [
         f_name_jaccard,
         f_core_jaccard,
         f_name_char3,
-        f_lev,
-        f_addr_jaccard,
-        f_addr_char3,
-        f_digit_match,
+        f_name_lev,
+        f_core_lev,
+        f_first_core_match,
         f_prefix_match,
         f_containment,
+        both_have_addr,
+        f_addr_jaccard,
+        f_addr_char3,
+        f_addr_lev,
+        both_have_digits,
+        f_digit_match,
+        f_digit_overlap,
         f_country_match
     ]

@@ -2,7 +2,6 @@ import re
 import unicodedata
 from typing import List, Set, Tuple
 
-# Common legal suffix and corporate designations to normalize/standardize
 LEGAL_TERMS = {
     'incorporated': 'inc', 'corporation': 'corp', 'company': 'co',
     'limited': 'ltd', 'private': 'pvt', 'privatelimited': 'pvt ltd',
@@ -17,7 +16,6 @@ LEGAL_TERMS = {
     'management': 'mgmt', 'center': 'ctr', 'centre': 'ctr'
 }
 
-# Common address abbreviations
 ADDRESS_ABBR = {
     'street': 'st', 'str': 'st', 'saint': 'st',
     'road': 'rd', 'avenue': 'ave', 'av': 'ave',
@@ -40,12 +38,17 @@ STOPWORDS = {
 }
 
 GENERIC_NAME_TOKENS = {
-    'inc', 'corp', 'co', 'ltd', 'pvt', 'llc', 'llp', 'enterprises', 'services',
-    'solutions', 'tech', 'holdings', 'group', 'consulting', 'partners', 'ind',
-    'mgmt', 'ctr', 'center', 'centre', 'shop', 'store', 'market', 'hotel', 'restaurant'
+    'inc', 'corp', 'co', 'ltd', 'pvt', 'llc', 'llp', 'enterprises', 'enterprise', 'services', 'service',
+    'solutions', 'solution', 'tech', 'technologies', 'technology', 'holdings', 'holding', 'group',
+    'consulting', 'consultants', 'partners', 'partner', 'ind', 'industries', 'industry',
+    'mgmt', 'management', 'ctr', 'center', 'centre', 'shop', 'store', 'market', 'hotel', 'restaurant',
+    'builders', 'builder', 'properties', 'prop', 'property', 'realty', 'realtors', 'construction',
+    'constructions', 'developers', 'developer', 'agency', 'agencies', 'trading', 'traders', 'trade',
+    'works', 'logistics', 'transport', 'transports', 'auto', 'automobiles', 'motors', 'motor',
+    'pharma', 'pharmaceuticals', 'finance', 'financial', 'financials', 'capital', 'ventures', 'venture',
+    'investments', 'investment', 'international', 'intl', 'commercial', 'commercials', 'global'
 }
 
-# Basic Indic transliteration mapping for frequent words
 INDIC_TO_LATIN = {
     'एसएस': 'ss', 'फूड': 'food', 'प्राइवेट': 'pvt', 'लिमिटेड': 'ltd',
     'रेड': 'red', 'वेंचर्स': 'ventures', 'होटल': 'hotel', 'एंटरप्राइजेज': 'enterprises',
@@ -57,37 +60,24 @@ INDIC_TO_LATIN = {
 }
 
 def remove_accents(text: str) -> str:
-    """Normalize unicode and strip accent marks (e.g. Énterprises -> Enterprises, Bóral -> Boral)."""
     if not text:
         return ""
-    # Map known Indic words if present
     for ind, lat in INDIC_TO_LATIN.items():
         if ind in text:
             text = text.replace(ind, lat)
-    
     nfkd_form = unicodedata.normalize('NFKD', text)
     return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
 
 def clean_text(text: str) -> str:
-    """Lowercase, strip accents, remove special characters, and collapse whitespace."""
     if not text or not isinstance(text, str):
         return ""
     text = remove_accents(text.lower())
-    # Replace punctuation with spaces
     text = re.sub(r'[^a-z0-9\s]', ' ', text)
-    # Collapse multiple spaces
     return re.sub(r'\s+', ' ', text).strip()
 
 def normalize_business_name(name: str) -> Tuple[str, List[str], List[str]]:
-    """
-    Returns:
-      1. normalized_name string
-      2. all_tokens list
-      3. core_distinct_tokens list (without legal suffixes & generic stopwords)
-    """
     cleaned = clean_text(name)
     tokens = cleaned.split()
-    
     normalized_tokens = []
     for tok in tokens:
         if tok in LEGAL_TERMS:
@@ -96,24 +86,14 @@ def normalize_business_name(name: str) -> Tuple[str, List[str], List[str]]:
             normalized_tokens.append(tok)
             
     norm_str = " ".join(normalized_tokens)
-    
-    # Extract distinct non-generic core tokens for high-precision blocking
     core_tokens = [t for t in normalized_tokens if t not in GENERIC_NAME_TOKENS and len(t) > 1]
     if not core_tokens and normalized_tokens:
         core_tokens = [normalized_tokens[0]]
-        
     return norm_str, normalized_tokens, core_tokens
 
 def normalize_address(address: str) -> Tuple[str, List[str], Set[str]]:
-    """
-    Returns:
-      1. normalized_address string
-      2. all_address_tokens
-      3. digits_and_codes set (e.g. street numbers, pin codes, door numbers)
-    """
     cleaned = clean_text(address)
     tokens = cleaned.split()
-    
     normalized_tokens = []
     digits = set()
     for tok in tokens:
@@ -123,5 +103,4 @@ def normalize_address(address: str) -> Tuple[str, List[str], Set[str]]:
             normalized_tokens.append(ADDRESS_ABBR[tok])
         elif tok not in STOPWORDS:
             normalized_tokens.append(tok)
-            
     return " ".join(normalized_tokens), normalized_tokens, digits

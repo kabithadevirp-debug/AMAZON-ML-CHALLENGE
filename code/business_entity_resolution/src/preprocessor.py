@@ -38,9 +38,15 @@ STOPWORDS = {
 }
 
 GENERIC_NAME_TOKENS = {
-    'inc', 'corp', 'co', 'ltd', 'pvt', 'llc', 'llp', 'enterprises', 'services',
-    'solutions', 'tech', 'holdings', 'group', 'consulting', 'partners', 'ind',
-    'mgmt', 'ctr', 'center', 'centre', 'shop', 'store', 'market', 'hotel', 'restaurant'
+    'inc', 'corp', 'co', 'ltd', 'pvt', 'llc', 'llp', 'enterprises', 'enterprise', 'services', 'service',
+    'solutions', 'solution', 'tech', 'technologies', 'technology', 'holdings', 'holding', 'group',
+    'consulting', 'consultants', 'partners', 'partner', 'ind', 'industries', 'industry',
+    'mgmt', 'management', 'ctr', 'center', 'centre', 'shop', 'store', 'market', 'hotel', 'restaurant',
+    'builders', 'builder', 'properties', 'prop', 'property', 'realty', 'realtors', 'construction',
+    'constructions', 'developers', 'developer', 'agency', 'agencies', 'trading', 'traders', 'trade',
+    'works', 'logistics', 'transport', 'transports', 'auto', 'automobiles', 'motors', 'motor',
+    'pharma', 'pharmaceuticals', 'finance', 'financial', 'financials', 'capital', 'ventures', 'venture',
+    'investments', 'investment', 'international', 'intl', 'commercial', 'commercials', 'global'
 }
 
 INDIC_TO_LATIN = {
